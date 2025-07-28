@@ -10,6 +10,8 @@ import requests
 
 # Cargar datos y modelo
 df = pd.read_csv("abt.csv")
+# Convertir 'ym' (formato YYYYMM) a datetime
+df["ym"] = pd.to_datetime(df["ym"].astype(str), format="%Y%m")
 df['ym'] = pd.to_datetime(df['ym'])
 df['ym_str'] = df['ym'].dt.strftime('%Y-%m')
 
@@ -63,10 +65,11 @@ def actualizar_grafico(gerencia, subcanal, marca):
     if df_filtrado.empty:
         return px.bar(title="No hay datos disponibles para estos filtros")
 
-    fig = px.scatter(df_filtrado, x="vol_vendido_antes_m1", y="desc_antes_m1", color="target",
-                     labels={"vol_vendido_antes_m1": "Volumen Vendido Anterior",
-                             "desc_antes_m1": "Descuento Anterior"},
-                     title="Volumen vs. Descuento - Clasificado por Compra")
+    fig = px.scatter(df_filtrado, x="vol", y="desc",
+                    labels={"vol": "Volumen Vendido Anterior",
+                            "desc": "Descuento Anterior"},
+                    title="Volumen vs. Descuento")
+
     return fig
 
 # Callback para gráfica 2
@@ -86,32 +89,42 @@ def actualizar_prediccion(gerencia, subcanal, marca):
     if df_filtrado.empty:
         return px.line(title="No hay datos para la predicción")
 
-    # Generar predicciones usando la API para cada fila
+    # Agrupar por mes para reducir llamadas
+    df_grouped = df_filtrado.groupby("ym").agg({
+        "desc": "mean",
+        "vol": "mean"
+    }).reset_index()
+
     predictions = []
-    for _, row in df_filtrado.iterrows():
+    for _, row in df_grouped.iterrows():
         payload = {
             "inputs": [{
-                "desc_antes_m1": float(row["desc_antes_m1"]),
-                "vol_vendido_antes_m1": float(row["vol_vendido_antes_m1"]),
-                "Gerencia": row["Gerencia"],
-                "subcanal": row["subcanal"]
+                "desc_antes_m1": float(row["desc"]),
+                "vol_vendido_antes_m1": float(row["vol"]),
+                "Gerencia": gerencia,
+                "subcanal": subcanal
             }]
         }
 
+        print(f"Enviando payload: {payload}")
         try:
             response = requests.post("http://34.229.135.171:8001/api/v1/predict", json=payload, timeout=5)
             if response.status_code == 200:
                 pred = response.json().get("predictions", [0])[0]
+                print(f"Predicción recibida: {pred}")
             else:
-                pred = 0  # fallback
-        except Exception:
-            pred = 0  # fallback en caso de error
+                print(f"Error HTTP {response.status_code}")
+                pred = 0
+        except Exception as e:
+            print(f"Error al llamar a la API: {e}")
+            pred = 0
+
         predictions.append(pred)
 
-    df_filtrado["prediction"] = predictions
+    df_grouped["prediction"] = predictions
+    df_grouped["ym"] = pd.to_datetime(df_grouped["ym"])  # asegurar formato
 
-    df_pred = df_filtrado.groupby("ym")["prediction"].mean().reset_index()
-    fig = px.line(df_pred, x="ym", y="prediction",
+    fig = px.line(df_grouped, x="ym", y="prediction",
                   labels={"ym": "Mes", "prediction": "Probabilidad de Compra"},
                   title="Predicción de Compra por Mes")
     return fig
