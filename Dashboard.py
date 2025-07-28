@@ -6,13 +6,12 @@ import plotly.express as px
 from dash import Dash, dcc, html, Input, Output
 from sklearn.preprocessing import MinMaxScaler
 from sklearn.compose import ColumnTransformer
+import requests
 
 # Cargar datos y modelo
 df = pd.read_csv("abt.csv")
 df['ym'] = pd.to_datetime(df['ym'])
 df['ym_str'] = df['ym'].dt.strftime('%Y-%m')
-
-model = joblib.load("model.pkl")
 
 # App
 app = Dash(__name__, suppress_callback_exceptions=True)
@@ -87,27 +86,29 @@ def actualizar_prediccion(gerencia, subcanal, marca):
     if df_filtrado.empty:
         return px.line(title="No hay datos para la predicción")
 
-    # Crear conjunto de entrada
-    X = df_filtrado[["desc_antes_m1", "vol_vendido_antes_m1", "Gerencia", "subcanal"]].copy()
-    X[["desc_antes_m1", "vol_vendido_antes_m1"]] = X[["desc_antes_m1", "vol_vendido_antes_m1"]].astype(float)
-    X["Gerencia"] = X["Gerencia"].astype(str)
-    X["subcanal"] = X["subcanal"].astype(str)
+    # Generar predicciones usando la API para cada fila
+    predictions = []
+    for _, row in df_filtrado.iterrows():
+        payload = {
+            "inputs": [{
+                "desc_antes_m1": float(row["desc_antes_m1"]),
+                "vol_vendido_antes_m1": float(row["vol_vendido_antes_m1"]),
+                "Gerencia": row["Gerencia"],
+                "subcanal": row["subcanal"]
+            }]
+        }
 
-    numeric_features = ["desc_antes_m1", "vol_vendido_antes_m1"]
-    categorical_features = ["Gerencia", "subcanal"]
-    numeric_transformer = MinMaxScaler()
+        try:
+            response = requests.post("http://34.229.135.171:8001/api/v1/predict", json=payload, timeout=5)
+            if response.status_code == 200:
+                pred = response.json().get("predictions", [0])[0]
+            else:
+                pred = 0  # fallback
+        except Exception:
+            pred = 0  # fallback en caso de error
+        predictions.append(pred)
 
-    preprocessor = ColumnTransformer(
-        transformers=[("num", numeric_transformer, numeric_features)],
-        remainder="passthrough"
-    )
-
-    X_processed = preprocessor.fit_transform(X[numeric_features])
-    X_categorical = X[categorical_features].values
-    X_final = np.hstack((X_processed, X_categorical))
-
-    y_pred = model.predict(X_final)
-    df_filtrado["prediction"] = y_pred
+    df_filtrado["prediction"] = predictions
 
     df_pred = df_filtrado.groupby("ym")["prediction"].mean().reset_index()
     fig = px.line(df_pred, x="ym", y="prediction",
